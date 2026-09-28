@@ -1,0 +1,3 @@
+# El servidor corre en Ubuntu: los scripts y la configuración siempre con LF,
+# aunque el repo se edite desde Windows.
+* text=auto eol=lf

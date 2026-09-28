@@ -1,0 +1,95 @@
+# Servidor local de planta (Antofagasta).
+#
+# Las terminales Servilion Desktop apuntan a http://<IP-de-este-equipo>:8000.
+# Todo se guarda primero aquí, en la base local; el servicio `sync` lo envía a
+# api.servilion.cl en uno o dos segundos cuando hay internet, y trae lo que se
+# hace en la web y en la app móvil.
+#
+# No se edita a mano: la configuración va en `.env` (ver .env.example).
+
+name: servilion-local
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-servilion}
+      POSTGRES_USER: ${POSTGRES_USER:-servilion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Sin puerto publicado: la base solo la ven los otros contenedores.
+
+  api:
+    image: ${SERVILION_IMAGE:-ghcr.io/howlonely/servilion-backend:latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVILION_NODE: edge
+      DATABASE_URL: postgresql://${POSTGRES_USER:-servilion}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-servilion}
+      REDIS_URL: ""
+    # Migra antes de atender: así una actualización automática nunca deja
+    # código nuevo corriendo contra un esquema viejo.
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             exec gunicorn core.wsgi:application --bind 0.0.0.0:8000
+             --workers ${API_WORKERS:-3} --threads 4 --timeout 60 --access-logfile -"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/docs', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 10
+      start_period: 60s
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  sync:
+    image: ${SERVILION_IMAGE:-ghcr.io/howlonely/servilion-backend:latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVILION_NODE: edge
+      DATABASE_URL: postgresql://${POSTGRES_USER:-servilion}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-servilion}
+      REDIS_URL: ""
+    # Espera a que `api` termine de migrar (las dos imágenes se actualizan a la
+    # vez y solo una debe correr las migraciones).
+    command: >
+      sh -c "until python manage.py migrate --check >/dev/null 2>&1; do
+               echo 'Esperando migraciones...'; sleep 5;
+             done;
+             exec python manage.py sync_worker"
+    depends_on:
+      db:
+        condition: service_healthy
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  # Actualización automática: cada 5 minutos revisa si hay una imagen nueva del
+  # backend en GitHub y, si la hay, la baja y reinicia `api` y `sync`.
+  watchtower:
+    image: containrrr/watchtower:latest
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_POLL_INTERVAL: ${UPDATE_INTERVAL_SECONDS:-300}
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_ROLLING_RESTART: "true"
+      TZ: America/Santiago
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Credenciales de ghcr.io si la imagen es privada (ver README).
+      - ${DOCKER_CONFIG_DIR:-/root/.docker}/config.json:/config.json:ro
+
+volumes:
+  postgres_data:
