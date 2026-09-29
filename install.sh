@@ -52,6 +52,9 @@ if [ ! -f .env ]; then
     sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(secret | head -c 40)|" .env
 fi
 
+# Un .env de antes de la imagen de planta apunta al backend completo de la nube.
+sed -i 's|^SERVILION_IMAGE=ghcr.io/howlonely/servilion-backend:|SERVILION_IMAGE=ghcr.io/howlonely/servilion-edge:|' .env
+
 current_token=$(grep -E '^SYNC_NODE_TOKEN=' .env | cut -d= -f2- || true)
 if [ -z "$current_token" ]; then
     echo
@@ -66,7 +69,19 @@ chmod 600 .env
 
 # --- 3. Contenedores --------------------------------------------------------
 bold "Bajando imágenes..."
-docker compose pull
+if ! docker compose pull; then
+    # La imagen de planta es privada. Las credenciales quedan en
+    # /root/.docker/config.json, que es donde Watchtower las lee para actualizar.
+    echo
+    echo "No se pudo bajar la imagen de planta: es privada y hace falta un token de"
+    echo "GitHub con permiso read:packages (ver README, «Acceso a la imagen»)."
+    read -r -p "Usuario de GitHub: " gh_user
+    read -r -s -p "Token: " gh_token
+    echo
+    echo "$gh_token" | DOCKER_CONFIG=/root/.docker docker login ghcr.io -u "$gh_user" --password-stdin \
+        || fail "GitHub rechazó el usuario o el token."
+    docker compose pull
+fi
 
 bold "Levantando base de datos y backend..."
 docker compose up -d db api
