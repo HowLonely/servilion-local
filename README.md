@@ -13,7 +13,16 @@ Servidor que corre en un PC dedicado de la planta de Antofagasta. Las terminales
 - **Trae lo que se hace afuera.** Usuarios y catálogo editados en la web, y las recepciones y entregas de la app móvil, llegan cada pocos segundos.
 - **Se actualiza solo.** Cuando se publica una versión nueva del backend en GitHub, este servidor la baja e instala sin que nadie haga nada.
 
-Este repo contiene solo lo que se instala. El código del backend vive en `servilion-backend` y llega como imagen Docker (`ghcr.io/howlonely/servilion-backend`), la misma que corre en la nube pero en "modo planta".
+Este repo contiene solo lo que se instala. El backend llega como imagen Docker de planta (`ghcr.io/howlonely/servilion-edge`), que **no es el backend de la nube**:
+
+| Lleva | No lleva |
+|---|---|
+| Modelos y base de datos completos (el esquema es el mismo que en la nube, si no, no se puede sincronizar) | Reportería del panel web |
+| La API de las terminales: pesaje, digitalización, empaque, despacho, hotelería, usuarios y catálogo | API de la app móvil de faena (entrega en habitación) |
+| Pantalla TV | Lado nube de la sincronización (registro de servidores, feed, fotos iniciales) |
+| Cliente de sincronización con la nube | Admin de Django, carga de datos legados, tests y documentación |
+
+Además va **compilada**: trae bytecode de Python, no el código fuente. Se arma desde `servilion-backend` con `Dockerfile.edge` (ver `servilion-backend/sync/README.md`, «Imagen del servidor local»).
 
 ---
 
@@ -40,7 +49,7 @@ cd servilion-local
 sudo ./install.sh
 ```
 
-El instalador instala Docker, genera las claves, pide el token del paso 1, levanta todo y baja desde la nube:
+El instalador instala Docker, genera las claves, pide el token del paso 1 (y el de GitHub para bajar la imagen, ver [Acceso a la imagen](#-acceso-a-la-imagen)), levanta todo y baja desde la nube:
 
 - **completo:** usuarios, roles, clientes, empresas, prendas, precios, faenas, campamentos, habitaciones, trabajadores, correlativos y hotelería;
 - **últimos 90 días:** guías y pesajes, más cualquier guía anterior que siga abierta.
@@ -59,14 +68,27 @@ Los usuarios y contraseñas son los mismos de siempre: vienen de la nube y funci
 
 | Qué | Cómo se actualiza |
 |---|---|
-| **Backend de este servidor** | Watchtower revisa cada 5 minutos si hay una imagen nueva en `ghcr.io` (se publica sola al hacer merge a `main` en `servilion-backend`). Si la hay, la baja, migra la base y reinicia. |
+| **Backend de este servidor** | Watchtower revisa cada 5 minutos si hay una imagen de planta nueva en `ghcr.io` (CI la publica junto con la de la nube al hacer merge a `main` en `servilion-backend`). Si la hay, la baja, migra la base y reinicia. |
 | **Servilion Desktop** | Cada terminal revisa los releases de GitHub al arrancar, descarga la versión nueva y la instala al cerrar la app. Ver `servilion-desktop/README.md`. |
 
 Para forzar la actualización ahora: `sudo ./scripts/update.sh`.
 
-> **Si la imagen de `ghcr.io` es privada**, el servidor necesita credenciales para bajarla. Crea en GitHub un token con permiso `read:packages` y corre, en el servidor:
-> `echo <TOKEN> | sudo docker login ghcr.io -u <usuario-github> --password-stdin`.
-> Lo más simple es dejar el paquete **público** (GitHub → Packages → servilion-backend → Package settings → Change visibility): la imagen no contiene secretos, los secretos van en `.env`.
+---
+
+## 🔑 Acceso a la imagen
+
+Las dos imágenes son **privadas** en GitHub Packages, y así tienen que quedar:
+
+- `servilion-backend` es el backend completo de la nube, con su código fuente. **Nunca se hace pública ni se instala en la planta.**
+- `servilion-edge` es la de este servidor. Privada también: solo la baja quien tenga un token.
+
+El servidor de planta usa un token de GitHub de **solo lectura de paquetes**:
+
+1. GitHub → Settings → Developer settings → Personal access tokens → **Tokens (classic)** → Generate new token, solo con el permiso `read:packages`. Idealmente desde una cuenta de GitHub creada para esto, sin acceso a los repos.
+2. `install.sh` lo pide si no puede bajar la imagen. Para cambiarlo después:
+   `echo <TOKEN> | sudo docker login ghcr.io -u <usuario-github> --password-stdin`
+
+El token queda en `/root/.docker/config.json`, que es de donde Watchtower lo lee para las actualizaciones. Si se revoca, la planta sigue trabajando pero deja de actualizarse.
 
 ---
 
